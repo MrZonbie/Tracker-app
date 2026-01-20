@@ -18,7 +18,7 @@ import {
   stopTracking,
 } from "../../src/location/tracking";
 
-const SERVER_URL = "http://192.168.1.11:3333";
+const SERVER_URL = "https://tracker-backend-kyf7.onrender.com";
 setServerUrl(SERVER_URL);
 
 // ---------- TIPOS ----------
