@@ -1,12 +1,16 @@
-import { Image } from "expo-image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Button, StyleSheet } from "react-native";
+import {
+  Alert,
+  Modal,
+  Pressable,
+  StyleSheet,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 import * as Location from "expo-location";
 import MapView, { Marker, Polyline } from "react-native-maps";
 
-import { HelloWave } from "@/components/hello-wave";
-import ParallaxScrollView from "@/components/parallax-scroll-view";
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 
@@ -32,28 +36,35 @@ type Point = {
 type Device = {
   deviceId: string;
   last: Point | null;
-  count: number;
 };
 
 type ViewMode = "single" | "all";
 
 // ---------- CORES ----------
-const COLORS = ["red", "blue", "green", "orange", "purple", "pink", "brown"];
+const COLORS = ["red", "blue", "green", "orange", "purple", "brown"];
 
 export default function HomeScreen() {
-  const [permission, setPermission] = useState("—");
-  const [deviceId, setDeviceId] = useState("—");
+  const mapRef = useRef<MapView>(null);
+
+  const [deviceId, setDeviceId] = useState<string>("—");
   const [viewMode, setViewMode] = useState<ViewMode>("single");
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const [history, setHistory] = useState<Point[]>([]);
   const [last, setLast] = useState<Point | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
 
-  const mapRef = useRef<MapView>(null!);
-
   // ---------- INIT ----------
   useEffect(() => {
     (async () => {
+      const fg = await Location.requestForegroundPermissionsAsync();
+      if (fg.status !== "granted") {
+        Alert.alert("Permissão negada");
+        return;
+      }
+
+      await Location.requestBackgroundPermissionsAsync();
+
       const id = await getOrCreateDeviceId();
       setDeviceId(id);
       setDeviceIdForTracking(id);
@@ -72,16 +83,17 @@ export default function HomeScreen() {
 
   // ---------- API ----------
   async function fetchHistory() {
-    if (!deviceId) return;
+    if (!deviceId || deviceId === "—") return;
 
     const res = await fetch(
-      `${SERVER_URL}/history?deviceId=${deviceId}&limit=200`
+      `${SERVER_URL}/history?deviceId=${deviceId}&limit=300`
     );
     const json = await res.json();
 
     if (json?.ok) {
       const points: Point[] = json.points ?? [];
       setHistory(points);
+
       if (points.length) setLast(points[points.length - 1]);
 
       const coords = points.map((p) => ({
@@ -106,157 +118,187 @@ export default function HomeScreen() {
     if (json?.ok) setDevices(json.devices ?? []);
   }
 
-  // ---------- LOCATION ----------
-  async function requestPermission() {
-    const fg = await Location.requestForegroundPermissionsAsync();
-    if (fg.status !== "granted") {
-      Alert.alert("Permissão negada");
-      return;
-    }
-    await Location.requestBackgroundPermissionsAsync();
-    setPermission("ok");
-  }
-
-  async function sendCurrentLocation() {
+  async function centerOnMe() {
     const loc = await Location.getCurrentPositionAsync({
       accuracy: Location.Accuracy.High,
     });
 
-    const p: Point = {
-      latitude: loc.coords.latitude,
-      longitude: loc.coords.longitude,
-      accuracy: loc.coords.accuracy ?? null,
-      timestamp: loc.timestamp,
-    };
-
-    setLast(p);
-
-    await fetch(`${SERVER_URL}/locations`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ deviceId, ...p }),
-    });
+    mapRef.current?.animateToRegion(
+      {
+        latitude: loc.coords.latitude,
+        longitude: loc.coords.longitude,
+        latitudeDelta: 0.01,
+        longitudeDelta: 0.01,
+      },
+      600
+    );
   }
 
   // ---------- UI ----------
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: "#A1CEDC", dark: "#1D3D47" }}
-      headerImage={
-        <Image
-          source={require("@/assets/images/partial-react-logo.png")}
-          style={styles.reactLogo}
-        />
-      }
-    >
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Tracker</ThemedText>
-        <HelloWave />
-      </ThemedView>
+    <View style={styles.container}>
+      {/* MAPA */}
+      <MapView
+        ref={mapRef}
+        style={StyleSheet.absoluteFillObject}
+        initialRegion={{
+          latitude: -23.55,
+          longitude: -46.63,
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
+        }}
+      >
+        {/* SINGLE */}
+        {viewMode === "single" && routeCoords.length >= 2 && (
+          <Polyline coordinates={routeCoords} strokeWidth={4} />
+        )}
 
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText>DeviceId:</ThemedText>
-        <ThemedText numberOfLines={1}>{deviceId}</ThemedText>
-      </ThemedView>
+        {viewMode === "single" && last && (
+          <Marker
+            coordinate={{ latitude: last.latitude, longitude: last.longitude }}
+            title="Minha posição"
+          />
+        )}
 
-      <ThemedView style={styles.stepContainer}>
-        <Button title="Pedir permissões" onPress={requestPermission} />
-        <Button title="Enviar localização atual" onPress={sendCurrentLocation} />
-      </ThemedView>
+        {/* ALL */}
+        {viewMode === "all" &&
+          devices.map((d, i) =>
+            d.last ? (
+              <Marker
+                key={d.deviceId}
+                coordinate={{
+                  latitude: d.last.latitude,
+                  longitude: d.last.longitude,
+                }}
+                title={`Device ${i + 1}`}
+                pinColor={COLORS[i % COLORS.length]}
+              />
+            ) : null
+          )}
+      </MapView>
 
-      {/* --------- MODO --------- */}
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Visualização</ThemedText>
-        <Button
-          title="Este dispositivo"
-          onPress={() => {
-            setViewMode("single");
-            fetchHistory();
-          }}
-        />
-        <Button
-          title="Todos os dispositivos"
-          onPress={() => {
-            setViewMode("all");
-            fetchDevices();
-          }}
-        />
-      </ThemedView>
+      {/* BOTÕES FLUTUANTES */}
+      <View style={styles.fabGroup}>
+        {/* MENU */}
+        <TouchableOpacity onPress={() => setMenuOpen(true)}>
+          <ThemedView style={styles.fabInner}>
+            <ThemedText style={styles.fabIcon}>☰</ThemedText>
+          </ThemedView>
+        </TouchableOpacity>
 
-      {/* --------- MAPA --------- */}
-      <ThemedView style={{ height: 350, borderRadius: 12, overflow: "hidden" }}>
-        <MapView
-          ref={mapRef}
-          style={{ flex: 1 }}
-          initialRegion={{
-            latitude: -23.55,
-            longitude: -46.63,
-            latitudeDelta: 0.05,
-            longitudeDelta: 0.05,
+        {/* MODE */}
+        <TouchableOpacity
+          onPress={async () => {
+            if (viewMode === "single") {
+              setViewMode("all");
+              await fetchDevices();
+            } else {
+              setViewMode("single");
+              await fetchHistory();
+            }
           }}
         >
-          {/* SINGLE */}
-          {viewMode === "single" && routeCoords.length >= 2 && (
-            <Polyline coordinates={routeCoords} strokeWidth={4} />
-          )}
+          <ThemedView style={styles.fabInner}>
+            <ThemedText style={styles.fabIcon}>
+              {viewMode === "single" ? "👥" : "📍"}
+            </ThemedText>
+          </ThemedView>
+        </TouchableOpacity>
 
-          {viewMode === "single" && last && (
-            <Marker
-              coordinate={{ latitude: last.latitude, longitude: last.longitude }}
-              title="Última posição"
-            />
-          )}
+        {/* CENTER */}
+        <TouchableOpacity onPress={centerOnMe}>
+          <ThemedView style={styles.fabInner}>
+            <ThemedText style={styles.fabIcon}>📍</ThemedText>
+          </ThemedView>
+        </TouchableOpacity>
+      </View>
 
-          {/* ALL */}
-          {viewMode === "all" &&
-            devices.map((d, i) =>
-              d.last ? (
-                <Marker
-                  key={d.deviceId}
-                  coordinate={{
-                    latitude: d.last.latitude,
-                    longitude: d.last.longitude,
-                  }}
-                  title={`Device ${i + 1}`}
-                  pinColor={COLORS[i % COLORS.length]}
-                />
-              ) : null
-            )}
-        </MapView>
-      </ThemedView>
+      {/* MENU / BOTTOM SHEET */}
+      <Modal transparent visible={menuOpen} animationType="slide">
+        <Pressable
+          style={styles.overlay}
+          onPress={() => setMenuOpen(false)}
+        />
 
-      <ThemedView style={styles.stepContainer}>
-        <Button title="Iniciar BG" onPress={startTracking} />
-        <Button title="Parar BG" onPress={stopTracking} />
-      </ThemedView>
+        <ThemedView style={styles.sheet}>
+          <ThemedText type="subtitle">Ações</ThemedText>
 
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText>
-          {viewMode === "single"
-            ? `Pontos na rota: ${routeCoords.length}`
-            : `Dispositivos visíveis: ${devices.length}`}
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+          <Pressable
+            style={styles.sheetItem}
+            onPress={async () => {
+              setMenuOpen(false);
+              await startTracking();
+              Alert.alert("Rastreamento iniciado");
+            }}
+          >
+            <ThemedText>▶️ Iniciar rastreio</ThemedText>
+          </Pressable>
+
+          <Pressable
+            style={styles.sheetItem}
+            onPress={async () => {
+              setMenuOpen(false);
+              await stopTracking();
+              Alert.alert("Rastreamento parado");
+            }}
+          >
+            <ThemedText>⏸️ Parar rastreio</ThemedText>
+          </Pressable>
+
+          <Pressable
+            style={styles.sheetItem}
+            onPress={async () => {
+              setMenuOpen(false);
+              setViewMode("single");
+              await fetchHistory();
+            }}
+          >
+            <ThemedText>🕓 Buscar histórico</ThemedText>
+          </Pressable>
+        </ThemedView>
+      </Modal>
+    </View>
   );
 }
 
 // ---------- STYLES ----------
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  container: {
+    flex: 1,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 12,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
+
+  fabGroup: {
     position: "absolute",
+    bottom: 30,
+    right: 20,
+    gap: 12,
+  },
+
+  fabInner: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 6,
+  },
+
+  fabIcon: {
+    fontSize: 22,
+  },
+
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.3)",
+  },
+
+  sheet: {
+    padding: 20,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+
+  sheetItem: {
+    paddingVertical: 14,
   },
 });
